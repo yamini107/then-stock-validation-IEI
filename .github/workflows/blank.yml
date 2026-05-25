@@ -1,0 +1,2748 @@
+"""
+app.py  –  Shopee Stock Validator  ·  Streamlit UI
+====================================================
+Upload:
+  1. Graas StockValidation CSV
+  2. Shopee mass_update_sales_info ZIP
+
+Then click "Run Validation" to compare and download the colour-coded report.
+"""streamlit>=1.35.0
+pandas>=2.0.0
+openpyxl>=3.1.0
+
+"""
+app.py  –  Shopee Stock Validator  ·  Streamlit UI
+====================================================
+Upload:
+  1. Graas StockValidation CSV
+  2. Shopee mass_update_sales_info ZIP
+
+Then click "Run Validation" to compare and download the colour-coded report.
+"""
+
+import io
+from datetime import datetime
+
+import pandas as pd
+import streamlit as st
+
+from processor import (
+    ValidationResult,
+    build_excel_report,
+    load_mass_update_zip,
+    load_stock_validation_csv,
+    validate,
+)
+
+# ── Page config ───────────────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="Shopee Stock Validator",
+    page_icon="📦",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
+# ── Custom CSS ────────────────────────────────────────────────────────────────
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Mono:wght@400;500&display=swap');
+
+    html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
+
+    /* Remove default streamlit top padding */
+    .block-container { padding-top: 2rem; padding-bottom: 2rem; }
+
+    /* Hero banner */
+    .hero {
+        background: linear-gradient(135deg, #EE4D2D 0%, #FF7337 60%, #FFB347 100%);
+        border-radius: 16px;
+        padding: 2rem 2.5rem;
+        color: white;
+        margin-bottom: 2rem;
+    }
+    .hero h1 { font-size: 2rem; font-weight: 700; margin: 0; letter-spacing: -0.5px; }
+    .hero p  { font-size: 1rem; opacity: 0.88; margin: 0.4rem 0 0; font-weight: 300; }
+
+    /* Metric cards */
+    .metric-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin: 1.5rem 0; }
+    .metric-card {
+        background: #fff;
+        border: 1px solid #e8e8e8;
+        border-radius: 12px;
+        padding: 1.2rem 1.4rem;
+        box-shadow: 0 2px 8px rgba(0,0,0,.05);
+    }
+    .metric-card .label { font-size: 0.78rem; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: .05em; }
+    .metric-card .value { font-size: 2rem; font-weight: 700; line-height: 1.1; margin-top: 4px; }
+    .metric-card .sub   { font-size: 0.75rem; color: #aaa; margin-top: 4px; }
+    .card-match   .value { color: #2D7D46; }
+    .card-mismatch .value { color: #C0392B; }
+    .card-total   .value { color: #1F3864; }
+
+    /* Remark badges */
+    .badge {
+        display: inline-block;
+        padding: 2px 10px;
+        border-radius: 99px;
+        font-size: 0.75rem;
+        font-weight: 600;
+        font-family: 'DM Mono', monospace;
+    }
+    .badge-true      { background:#C6EFCE; color:#375623; }
+    .badge-impact    { background:#FFC7CE; color:#9C0006; }
+    .badge-update0   { background:#FFEB9C; color:#7D4800; }
+    .badge-nisp      { background:#E0E0E0; color:#444;    }
+
+    /* Upload boxes */
+    [data-testid="stFileUploader"] {
+        border: 2px dashed #EE4D2D40 !important;
+        border-radius: 12px;
+    }
+
+    /* Download button */
+    .stDownloadButton > button {
+        background: linear-gradient(135deg, #EE4D2D, #FF7337) !important;
+        color: white !important;
+        border: none !important;
+        border-radius: 8px !important;
+        font-weight: 600 !important;
+        padding: 0.6rem 1.6rem !important;
+        font-size: 0.95rem !important;
+    }
+    .stDownloadButton > button:hover { opacity: 0.88; }
+
+    /* Run button */
+    .stButton > button {
+        background: #1F3864 !important;
+        color: white !important;
+        border: none !important;
+        border-radius: 8px !important;
+        font-weight: 600 !important;
+        padding: 0.6rem 1.6rem !important;
+        font-size: 0.95rem !important;
+        width: 100%;
+    }
+
+    /* Tabs */
+    .stTabs [data-baseweb="tab-list"] { gap: 4px; border-bottom: 2px solid #f0f0f0; }
+    .stTabs [data-baseweb="tab"] { border-radius: 8px 8px 0 0; font-weight: 500; }
+
+    /* Dataframe */
+    .dataframe-container { border-radius: 10px; overflow: hidden; }
+
+    /* Section divider */
+    .section-title {
+        font-size: 1rem;
+        font-weight: 700;
+        color: #1F3864;
+        margin: 1.5rem 0 0.6rem;
+        letter-spacing: -.2px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+# ── Hero ──────────────────────────────────────────────────────────────────────
+st.markdown(
+    """
+    <div class="hero">
+        <h1>📦 Shopee Stock Validator</h1>
+        <p>Compare Graas StockValidation vs Shopee mass_update_sales_info — get a colour-coded mismatch report instantly.</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+# ── File upload ───────────────────────────────────────────────────────────────
+col1, col2 = st.columns(2)
+
+with col1:
+    st.markdown('<div class="section-title">① Graas StockValidation CSV</div>', unsafe_allow_html=True)
+    sv_file = st.file_uploader(
+        "Upload StockValidation CSV",
+        type=["csv"],
+        key="sv",
+        label_visibility="collapsed",
+    )
+    if sv_file:
+        st.caption(f"✅ {sv_file.name}  ({sv_file.size / 1024:.1f} KB)")
+
+with col2:
+    st.markdown('<div class="section-title">② Shopee mass_update_sales_info ZIP</div>', unsafe_allow_html=True)
+    zip_file = st.file_uploader(
+        "Upload mass_update ZIP",
+        type=["zip"],
+        key="zip",
+        label_visibility="collapsed",
+    )
+    if zip_file:
+        st.caption(f"✅ {zip_file.name}  ({zip_file.size / 1024:.1f} KB)")
+
+
+# ── Run validation ────────────────────────────────────────────────────────────
+st.markdown("")
+_, btn_col, _ = st.columns([2, 1, 2])
+with btn_col:
+    run = st.button("▶  Run Validation", disabled=not (sv_file and zip_file))
+
+
+def _remark_badge(remark: str) -> str:
+    cls = {
+        "TRUE": "true",
+        "IMPACT": "impact",
+        "UPDATE 0": "update0",
+        "NOT IN S&P": "nisp",
+    }.get(remark, "nisp")
+    return f'<span class="badge badge-{cls}">{remark}</span>'
+
+
+def _colour_remark_col(val: str) -> str:
+    colours = {
+        "TRUE":       "background-color:#C6EFCE; color:#375623; font-weight:600",
+        "IMPACT":     "background-color:#FFC7CE; color:#9C0006; font-weight:600",
+        "UPDATE 0":   "background-color:#FFEB9C; color:#7D4800; font-weight:600",
+        "NOT IN S&P": "background-color:#E0E0E0; color:#444;    font-weight:600",
+    }
+    return colours.get(val, "")
+
+
+if run or st.session_state.get("result"):
+    if run:
+        with st.spinner("Processing files…"):
+            try:
+                sv_bytes  = sv_file.read()
+                zip_bytes = zip_file.read()
+                sv_df  = load_stock_validation_csv(sv_bytes)
+                sp_df  = load_mass_update_zip(zip_bytes)
+                result = validate(sv_df, sp_df)
+                excel_buf = build_excel_report(result)
+                st.session_state["result"]    = result
+                st.session_state["excel_buf"] = excel_buf.getvalue()
+            except Exception as exc:
+                st.error(f"❌ Error during processing: {exc}")
+                st.stop()
+
+    result: ValidationResult = st.session_state["result"]
+    excel_bytes: bytes        = st.session_state["excel_buf"]
+
+    # ── KPI cards ──────────────────────────────────────────────────────────
+    pct_match = result.match / result.total * 100 if result.total else 0
+
+    st.markdown(
+        f"""
+        <div class="metric-grid">
+            <div class="metric-card card-total">
+                <div class="label">Total SKUs</div>
+                <div class="value">{result.total:,}</div>
+                <div class="sub">in StockValidation report</div>
+            </div>
+            <div class="metric-card card-match">
+                <div class="label">✓ Match</div>
+                <div class="value">{result.match:,}</div>
+                <div class="sub">{pct_match:.1f}% of total</div>
+            </div>
+            <div class="metric-card card-mismatch">
+                <div class="label">✗ Mismatch</div>
+                <div class="value">{result.mismatch:,}</div>
+                <div class="sub">IMPACT {result.impact} · UPDATE 0 {result.update0} · NOT IN S&P {result.not_in_sp}</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # ── Breakdown bar ──────────────────────────────────────────────────────
+    if result.total:
+        bp_match   = result.match   / result.total * 100
+        bp_impact  = result.impact  / result.total * 100
+        bp_update0 = result.update0 / result.total * 100
+        bp_nisp    = result.not_in_sp / result.total * 100
+        st.markdown(
+            f"""
+            <div style="display:flex;height:10px;border-radius:8px;overflow:hidden;margin:-0.5rem 0 1.5rem">
+                <div style="width:{bp_match:.2f}%;background:#2D7D46"></div>
+                <div style="width:{bp_impact:.2f}%;background:#C0392B"></div>
+                <div style="width:{bp_update0:.2f}%;background:#E6A817"></div>
+                <div style="width:{bp_nisp:.2f}%;background:#aaa"></div>
+            </div>
+            <div style="display:flex;gap:1.5rem;font-size:0.78rem;color:#666;margin-bottom:1.5rem">
+                <span>🟢 Match</span><span>🔴 IMPACT</span><span>🟡 UPDATE 0</span><span>⚪ NOT IN S&P</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    # ── Tabs ───────────────────────────────────────────────────────────────
+    tab_all, tab_mismatch, tab_impact, tab_update0, tab_nisp = st.tabs(
+        ["All SKUs", f"Mismatch ({result.mismatch})", f"IMPACT ({result.impact})", f"UPDATE 0 ({result.update0})", f"NOT IN S&P ({result.not_in_sp})"]
+    )
+
+    def _show_df(df: pd.DataFrame) -> None:
+        if df.empty:
+            st.info("No records in this category.")
+            return
+        styled = df.style.applymap(_colour_remark_col, subset=["Remark"]) if "Remark" in df.columns else df.style
+        st.dataframe(styled, use_container_width=True, height=420)
+
+    with tab_all:
+        _show_df(result.full_df)
+
+    with tab_mismatch:
+        _show_df(result.mismatch_df)
+
+    with tab_impact:
+        _show_df(result.full_df[result.full_df["Remark"] == "IMPACT"])
+
+    with tab_update0:
+        _show_df(result.full_df[result.full_df["Remark"] == "UPDATE 0"])
+
+    with tab_nisp:
+        _show_df(result.full_df[result.full_df["Remark"] == "NOT IN S&P"])
+
+    # ── Download ───────────────────────────────────────────────────────────
+    st.markdown("")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    st.download_button(
+        label="⬇  Download Excel Report",
+        data=excel_bytes,
+        file_name=f"Shopee_Stock_Validation_{timestamp}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+"""
+processor.py
+------------
+Core logic for Shopee Stock Validation.
+Compares a Graas StockValidation CSV against a Shopee
+mass_update_sales_info ZIP (containing one or more .xlsx files).
+
+Remark priority:
+  1. SKU not in mass-update file  → NOT IN S&P
+  2. Expected == 0 AND SP_Qty > 0 → UPDATE 0
+  3. Expected != SP_Qty           → IMPACT
+  4. Expected == SP_Qty           → TRUE  (Match)
+"""
+
+from __future__ import annotations
+
+import io
+import re
+import zipfile
+from dataclasses import dataclass
+
+import pandas as pd
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
+
+
+# ── Colour palette ────────────────────────────────────────────────────────────
+HDR_FILL  = PatternFill("solid", fgColor="1F3864")
+HDR_FONT  = Font(bold=True, color="FFFFFF", name="Arial", size=11)
+TRUE_FILL = PatternFill("solid", fgColor="C6EFCE")
+TRUE_FONT = Font(bold=True, color="375623", name="Arial", size=10)
+MISS_FILL = PatternFill("solid", fgColor="FFC7CE")
+MISS_FONT = Font(bold=True, color="9C0006", name="Arial", size=10)
+UPD0_FILL = PatternFill("solid", fgColor="FFEB9C")
+UPD0_FONT = Font(bold=True, color="7D4800", name="Arial", size=10)
+NISP_FILL = PatternFill("solid", fgColor="D9D9D9")
+NISP_FONT = Font(bold=True, color="595959", name="Arial", size=10)
+ALT_FILL  = PatternFill("solid", fgColor="F2F7FB")
+THIN_BORDER = Border(
+    left=Side(style="thin", color="BFBFBF"),
+    right=Side(style="thin", color="BFBFBF"),
+    top=Side(style="thin", color="BFBFBF"),
+    bottom=Side(style="thin", color="BFBFBF"),
+)
+
+REMARK_STYLE: dict[str, tuple[PatternFill, Font]] = {
+    "TRUE":       (TRUE_FILL, TRUE_FONT),
+    "IMPACT":     (MISS_FILL, MISS_FONT),
+    "UPDATE 0":   (UPD0_FILL, UPD0_FONT),
+    "NOT IN S&P": (NISP_FILL, NISP_FONT),
+}
+
+
+# ── Data classes ──────────────────────────────────────────────────────────────
+@dataclass
+class ValidationResult:
+    full_df: pd.DataFrame
+    mismatch_df: pd.DataFrame
+    total: int
+    match: int
+    impact: int
+    update0: int
+    not_in_sp: int
+
+    @property
+    def mismatch(self) -> int:
+        return self.impact + self.update0 + self.not_in_sp
+
+
+# ── Helper: fix malformed xlsx from Shopee ────────────────────────────────────
+def _fix_xlsx_bytes(raw_bytes: bytes) -> io.BytesIO:
+    """
+    Shopee-exported xlsx files sometimes contain an invalid ``activePane``
+    attribute in the sheet XML.  This function strips it before parsing.
+    """
+    buf = io.BytesIO()
+    with (
+        zipfile.ZipFile(io.BytesIO(raw_bytes), "r") as inner,
+        zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zout,
+    ):
+        for item in inner.infolist():
+            data = inner.read(item.filename)
+            if item.filename.startswith("xl/worksheets/") and item.filename.endswith(".xml"):
+                text = data.decode("utf-8", errors="replace")
+                text = re.sub(r'activePane="[^"]*"', "", text)
+                data = text.encode("utf-8")
+            zout.writestr(item, data)
+    buf.seek(0)
+    return buf
+
+
+# ── Loaders ───────────────────────────────────────────────────────────────────
+def load_mass_update_zip(zip_file: bytes | str) -> pd.DataFrame:
+    """
+    Load all .xlsx files from a Shopee mass_update_sales_info ZIP.
+
+    Accepts either a file path (str) or raw bytes.
+
+    Returns a combined DataFrame with columns:
+        SKU (str), Stock (int), Product Name (str), Price (float)
+    """
+    if isinstance(zip_file, (str,)):
+        with open(zip_file, "rb") as f:
+            zip_file = f.read()
+
+    dfs: list[pd.DataFrame] = []
+    with zipfile.ZipFile(io.BytesIO(zip_file), "r") as z:
+        xlsx_files = [n for n in z.namelist() if n.endswith(".xlsx")]
+        for fn in xlsx_files:
+            raw = z.read(fn)
+            fixed_buf = _fix_xlsx_bytes(raw)
+            df = pd.read_excel(
+                fixed_buf,
+                header=2,
+                skiprows=[3, 4, 5],
+                engine="openpyxl",
+            )
+            dfs.append(df)
+
+    if not dfs:
+        raise ValueError("No .xlsx files found inside the ZIP archive.")
+
+    combined = pd.concat(dfs, ignore_index=True)
+    combined["SKU"]   = combined["SKU"].astype(str).str.strip()
+    combined["Stock"] = pd.to_numeric(combined["Stock"], errors="coerce").fillna(0).astype(int)
+    return combined
+
+
+def load_stock_validation_csv(csv_file: bytes | str) -> pd.DataFrame:
+    """
+    Load a Graas StockValidation CSV.
+
+    Accepts either a file path (str) or raw bytes.
+    """
+    if isinstance(csv_file, (str,)):
+        sv = pd.read_csv(csv_file)
+    else:
+        sv = pd.read_csv(io.BytesIO(csv_file))
+
+    sv.columns = sv.columns.str.strip()
+    sv["Seller SKU"] = sv["Seller SKU"].astype(str).str.strip()
+    return sv
+
+
+# ── Core validation ───────────────────────────────────────────────────────────
+def validate(sv: pd.DataFrame, sp: pd.DataFrame) -> ValidationResult:
+    """
+    Compare StockValidation against mass-update data.
+
+    Parameters
+    ----------
+    sv : StockValidation DataFrame (output of load_stock_validation_csv)
+    sp : mass-update DataFrame    (output of load_mass_update_zip)
+
+    Returns
+    -------
+    ValidationResult
+    """
+    sp_lookup: dict[str, int] = sp.groupby("SKU")["Stock"].sum().to_dict()
+
+    def _classify(row: pd.Series) -> pd.Series:
+        exp = int(row["Expected Stock"]) if pd.notna(row["Expected Stock"]) else 0
+        sp_qty = sp_lookup.get(row["Seller SKU"], None)
+
+        if sp_qty is None:
+            return pd.Series([0, "Mismatch", "NOT IN S&P"])
+        sp_qty = int(sp_qty)
+        if exp == 0 and sp_qty > 0:
+            return pd.Series([sp_qty, "Mismatch", "UPDATE 0"])
+        if exp != sp_qty:
+            return pd.Series([sp_qty, "Mismatch", "IMPACT"])
+        return pd.Series([sp_qty, "Match", "TRUE"])
+
+    sv = sv.copy()
+    sv[["SP_Quantity", "Status", "Remark"]] = sv.apply(_classify, axis=1)
+
+    mismatch_df = sv[sv["Status"] == "Mismatch"].copy()
+
+    return ValidationResult(
+        full_df=sv,
+        mismatch_df=mismatch_df,
+        total=len(sv),
+        match=int((sv["Remark"] == "TRUE").sum()),
+        impact=int((sv["Remark"] == "IMPACT").sum()),
+        update0=int((sv["Remark"] == "UPDATE 0").sum()),
+        not_in_sp=int((sv["Remark"] == "NOT IN S&P").sum()),
+    )
+
+
+# ── Excel export ──────────────────────────────────────────────────────────────
+def _write_sheet(ws, df: pd.DataFrame) -> None:
+    ws.sheet_view.showGridLines = False
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+
+    # Header row
+    for ci, col in enumerate(df.columns, 1):
+        cell = ws.cell(row=1, column=ci, value=col)
+        cell.fill = HDR_FILL
+        cell.font = HDR_FONT
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = THIN_BORDER
+    ws.row_dimensions[1].height = 30
+
+    # Data rows
+    for ri, (_, row) in enumerate(df.iterrows(), 2):
+        remark = row.get("Remark", "") if "Remark" in df.columns else ""
+        fill, font = REMARK_STYLE.get(remark, (None, Font(name="Arial", size=10)))
+        for ci, col in enumerate(df.columns, 1):
+            cell = ws.cell(row=ri, column=ci, value=row[col])
+            cell.border = THIN_BORDER
+            if fill:
+                cell.fill = fill
+                cell.font = font
+            else:
+                cell.font = Font(name="Arial", size=10)
+                if ri % 2 == 0:
+                    cell.fill = ALT_FILL
+
+    # Column widths
+    for ci, col in enumerate(df.columns, 1):
+        sample = [str(df.iloc[r, ci - 1]) for r in range(min(len(df), 300))]
+        max_len = max(len(str(col)), *(len(s) for s in sample), default=10)
+        ws.column_dimensions[get_column_letter(ci)].width = min(max_len + 2, 42)
+
+
+def build_excel_report(result: ValidationResult) -> io.BytesIO:
+    """
+    Build and return an in-memory Excel workbook from a ValidationResult.
+    """
+    wb = Workbook()
+
+    # ── Summary sheet ──────────────────────────────────────────────────────
+    ws_sum = wb.active
+    ws_sum.title = "Summary"
+    ws_sum.sheet_view.showGridLines = False
+    ws_sum.column_dimensions["A"].width = 36
+    ws_sum.column_dimensions["B"].width = 18
+
+    summary_rows = [
+        ("Shopee StockValidation vs Mass Update",  "",                 PatternFill("solid", fgColor="1F3864"), Font(bold=True, color="FFFFFF", name="Arial", size=12)),
+        ("Total SKUs",                              result.total,       None,                                   Font(name="Arial", size=10)),
+        ("Match (TRUE)",                            result.match,       TRUE_FILL,                              TRUE_FONT),
+        ("Mismatch Total",                          result.mismatch,    MISS_FILL,                              MISS_FONT),
+        ("  → IMPACT",                              result.impact,      MISS_FILL,                              Font(color="9C0006", name="Arial", size=10)),
+        ("  → UPDATE 0",                            result.update0,     UPD0_FILL,                              Font(color="7D4800", name="Arial", size=10)),
+        ("  → NOT IN S&P",                          result.not_in_sp,   NISP_FILL,                              Font(color="595959", name="Arial", size=10)),
+    ]
+    for ri, (label, value, fill, font) in enumerate(summary_rows, 2):
+        for ci, v in enumerate([label, value], 1):
+            cell = ws_sum.cell(row=ri, column=ci, value=v)
+            cell.border = THIN_BORDER
+            cell.alignment = Alignment(horizontal="left", vertical="center")
+            cell.font = font
+            if fill:
+                cell.fill = fill
+        ws_sum.row_dimensions[ri].height = 22
+
+    # ── Full data sheet ────────────────────────────────────────────────────
+    ws_sv = wb.create_sheet("StockVal + Remark")
+    _write_sheet(ws_sv, result.full_df)
+
+    # ── Mismatch sheet ─────────────────────────────────────────────────────
+    ws_mm = wb.create_sheet("Mismatch Summary")
+    _write_sheet(ws_mm, result.mismatch_df)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
+# 📦 Shopee Stock Validator
+
+A Streamlit web app that compares a **Graas StockValidation CSV** against a
+**Shopee `mass_update_sales_info` ZIP** and produces a colour-coded Excel report.
+
+---
+
+## Remark Logic
+
+| Priority | Condition | Status | Remark |
+|---|---|---|---|
+| 1 | SKU not found in ZIP | Mismatch | `NOT IN S&P` |
+| 2 | Expected == 0 AND ZIP Qty > 0 | Mismatch | `UPDATE 0` |
+| 3 | Expected ≠ ZIP Qty | Mismatch | `IMPACT` |
+| 4 | Expected == ZIP Qty | Match | `TRUE` |
+
+---
+
+## Project Structure
+
+```
+shopee-stock-validator/
+├── app.py            # Streamlit UI
+├── processor.py      # Core validation & Excel export logic
+├── requirements.txt
+└── README.md
+```
+
+---
+
+## Quickstart
+
+### 1. Clone & install
+
+```bash
+git clone https://github.com/your-org/shopee-stock-validator.git
+cd shopee-stock-validator
+pip install -r requirements.txt
+```
+
+### 2. Run locally
+
+```bash
+streamlit run app.py
+```
+
+Open [http://localhost:8501](http://localhost:8501) in your browser.
+
+---
+
+## Deploy to Streamlit Cloud
+
+1. Push this repo to GitHub (public or private).
+2. Go to [share.streamlit.io](https://share.streamlit.io) → **New app**.
+3. Select your repo, branch `main`, and main file `app.py`.
+4. Click **Deploy** — done!
+
+---
+
+## Input Files
+
+| File | Format | Description |
+|---|---|---|
+| StockValidation | `.csv` | Graas export — must contain `Seller SKU` and `Expected Stock` columns |
+| mass_update_sales_info | `.zip` | Shopee bulk-update ZIP — contains one or more `.xlsx` files with `SKU` and `Stock` columns |
+
+## Output
+
+A three-sheet Excel workbook:
+
+| Sheet | Contents |
+|---|---|
+| `Summary` | KPI dashboard |
+| `StockVal + Remark` | Full list with `SP_Quantity`, `Status`, `Remark` columns |
+| `Mismatch Summary` | Only mismatched rows (IMPACT + UPDATE 0 + NOT IN S&P) |
+
+---
+
+## Use as a Python module
+
+```python
+from processor import (
+    load_stock_validation_csv,
+    load_mass_update_zip,
+    validate,
+    build_excel_report,
+)
+
+sv = load_stock_validation_csv("Graas_Report.csv")
+sp = load_mass_update_zip("mass_update.zip")
+result = validate(sv, sp)
+
+print(result.total, result.match, result.mismatch)
+
+with open("report.xlsx", "wb") as f:
+    f.write(build_excel_report(result).read())
+```
+
+---
+
+## Colour Legend
+
+| Colour | Remark | Meaning |
+|---|---|---|
+| 🟢 Green | `TRUE` | Stock matches |
+| 🔴 Red | `IMPACT` | Stock quantity differs |
+| 🟡 Yellow | `UPDATE 0` | Shopee shows stock but expected is 0 — needs zeroing |
+| ⚪ Grey | `NOT IN S&P` | SKU missing from mass-update file |
+
+
+import io
+from datetime import datetime"""
+processor.py
+------------# 📦 Shopee Stock Validator
+
+A Streamlit web app that compares a **Graas StockValidation CSV** against a
+**Shopee `mass_update_sales_info` ZIP** and produces a colour-coded Excel report.
+
+---
+
+## Remark Logic
+
+| Priority | Condition | Status | Remark |
+|---|---|---|---|
+| 1 | SKU not found in ZIP | Mismatch | `NOT IN S&P` |
+| 2 | Expected == 0 AND ZIP Qty > 0 | Mismatch | `UPDATE 0` |
+| 3 | Expected ≠ ZIP Qty | Mismatch | `IMPACT` |
+| 4 | Expected == ZIP Qty | Match | `TRUE` |
+
+---
+
+## Project Structure
+
+```
+shopee-stock-validator/
+├── app.py            # Streamlit UI
+├── processor.py      # Core validation & Excel export logic
+├── requirements.txt
+└── README.md
+```
+
+---
+
+## Quickstart
+
+### 1. Clone & install
+
+```bash
+git clone https://github.com/your-org/shopee-stock-validator.git
+cd shopee-stock-validator
+pip install -r requirements.txt
+```
+
+### 2. Run locally
+
+```bash
+streamlit run app.py
+```
+
+Open [http://localhost:8501](http://localhost:8501) in your browser.
+
+---
+
+## Deploy to Streamlit Cloud
+
+1. Push this repo to GitHub (public or private).
+2. Go to [share.streamlit.io](https://share.streamlit.io) → **New app**.
+3. Select your repo, branch `main`, and main file `app.py`.
+4. Click **Deploy** — done!
+
+---
+
+## Input Files
+
+| File | Format | Description |
+|---|---|---|
+| StockValidation | `.csv` | Graas export — must contain `Seller SKU` and `Expected Stock` columns |
+| mass_update_sales_info | `.zip` | Shopee bulk-update ZIP — contains one or more `.xlsx` files with `SKU` and `Stock` columns |
+
+## Output
+
+A three-sheet Excel workbook:
+
+| Sheet | Contents |
+|---|---|
+| `Summary` | KPI dashboard |
+| `StockVal + Remark` | Full list with `SP_Quantity`, `Status`, `Remark` columns |
+| `Mismatch Summary` | Only mismatched rows (IMPACT + UPDATE 0 + NOT IN S&P) |
+
+---
+
+## Use as a Python module
+
+```python
+from processor import (
+    load_stock_validation_csv,
+    load_mass_update_zip,
+    validate,
+    build_excel_report,
+)
+
+sv = load_stock_validation_csv("Graas_Report.csv")
+sp = load_mass_update_zip("mass_update.zip")
+result = validate(sv, sp)
+
+print(result.total, result.match, result.mismatch)
+
+with open("report.xlsx", "wb") as f:
+    f.write(build_excel_report(result).read())
+```
+
+---
+
+## Colour Legend
+
+| Colour | Remark | Meaning |
+|---|---|---|
+| 🟢 Green | `TRUE` | Stock matches |
+| 🔴 Red | `IMPACT` | Stock quantity differs |
+| 🟡 Yellow | `UPDATE 0` | Shopee shows stock but expected is 0 — needs zeroing |
+| ⚪ Grey | `NOT IN S&P` | SKU missing from mass-update file |
+
+streamlit>=1.35.0
+pandas>=2.0.0
+openpyxl>=3.1.0
+
+"""
+app.py  –  Shopee Stock Validator  ·  Streamlit UI
+====================================================
+Upload:
+  1. Graas StockValidation CSV
+  2. Shopee mass_update_sales_info ZIP
+
+Then click "Run Validation" to compare and download the colour-coded report.
+"""
+
+import io
+from datetime import datetime
+
+import pandas as pd
+import streamlit as st
+
+from processor import (
+    ValidationResult,
+    build_excel_report,
+    load_mass_update_zip,
+    load_stock_validation_csv,
+    validate,
+)
+
+# ── Page config ───────────────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="Shopee Stock Validator",
+    page_icon="📦",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
+# ── Custom CSS ────────────────────────────────────────────────────────────────
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Mono:wght@400;500&display=swap');
+
+    html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
+
+    /* Remove default streamlit top padding */
+    .block-container { padding-top: 2rem; padding-bottom: 2rem; }
+
+    /* Hero banner */
+    .hero {
+        background: linear-gradient(135deg, #EE4D2D 0%, #FF7337 60%, #FFB347 100%);
+        border-radius: 16px;
+        padding: 2rem 2.5rem;
+        color: white;
+        margin-bottom: 2rem;
+    }
+    .hero h1 { font-size: 2rem; font-weight: 700; margin: 0; letter-spacing: -0.5px; }
+    .hero p  { font-size: 1rem; opacity: 0.88; margin: 0.4rem 0 0; font-weight: 300; }
+
+    /* Metric cards */
+    .metric-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin: 1.5rem 0; }
+    .metric-card {
+        background: #fff;
+        border: 1px solid #e8e8e8;
+        border-radius: 12px;
+        padding: 1.2rem 1.4rem;
+        box-shadow: 0 2px 8px rgba(0,0,0,.05);
+    }
+    .metric-card .label { font-size: 0.78rem; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: .05em; }
+    .metric-card .value { font-size: 2rem; font-weight: 700; line-height: 1.1; margin-top: 4px; }
+    .metric-card .sub   { font-size: 0.75rem; color: #aaa; margin-top: 4px; }
+    .card-match   .value { color: #2D7D46; }
+    .card-mismatch .value { color: #C0392B; }
+    .card-total   .value { color: #1F3864; }
+
+    /* Remark badges */
+    .badge {
+        display: inline-block;
+        padding: 2px 10px;
+        border-radius: 99px;
+        font-size: 0.75rem;
+        font-weight: 600;
+        font-family: 'DM Mono', monospace;
+    }
+    .badge-true      { background:#C6EFCE; color:#375623; }
+    .badge-impact    { background:#FFC7CE; color:#9C0006; }
+    .badge-update0   { background:#FFEB9C; color:#7D4800; }
+    .badge-nisp      { background:#E0E0E0; color:#444;    }
+
+    /* Upload boxes */
+    [data-testid="stFileUploader"] {
+        border: 2px dashed #EE4D2D40 !important;
+        border-radius: 12px;
+    }
+
+    /* Download button */
+    .stDownloadButton > button {
+        background: linear-gradient(135deg, #EE4D2D, #FF7337) !important;
+        color: white !important;
+        border: none !important;
+        border-radius: 8px !important;
+        font-weight: 600 !important;
+        padding: 0.6rem 1.6rem !important;
+        font-size: 0.95rem !important;
+    }
+    .stDownloadButton > button:hover { opacity: 0.88; }
+
+    /* Run button */
+    .stButton > button {
+        background: #1F3864 !important;
+        color: white !important;
+        border: none !important;
+        border-radius: 8px !important;
+        font-weight: 600 !important;
+        padding: 0.6rem 1.6rem !important;
+        font-size: 0.95rem !important;
+        width: 100%;
+    }
+
+    /* Tabs */
+    .stTabs [data-baseweb="tab-list"] { gap: 4px; border-bottom: 2px solid #f0f0f0; }
+    .stTabs [data-baseweb="tab"] { border-radius: 8px 8px 0 0; font-weight: 500; }
+
+    /* Dataframe */
+    .dataframe-container { border-radius: 10px; overflow: hidden; }
+
+    /* Section divider */
+    .section-title {
+        font-size: 1rem;
+        font-weight: 700;
+        color: #1F3864;
+        margin: 1.5rem 0 0.6rem;
+        letter-spacing: -.2px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+# ── Hero ──────────────────────────────────────────────────────────────────────
+st.markdown(
+    """
+    <div class="hero">
+        <h1>📦 Shopee Stock Validator</h1>
+        <p>Compare Graas StockValidation vs Shopee mass_update_sales_info — get a colour-coded mismatch report instantly.</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+# ── File upload ───────────────────────────────────────────────────────────────
+col1, col2 = st.columns(2)
+
+with col1:
+    st.markdown('<div class="section-title">① Graas StockValidation CSV</div>', unsafe_allow_html=True)
+    sv_file = st.file_uploader(
+        "Upload StockValidation CSV",
+        type=["csv"],
+        key="sv",
+        label_visibility="collapsed",
+    )
+    if sv_file:
+        st.caption(f"✅ {sv_file.name}  ({sv_file.size / 1024:.1f} KB)")
+
+with col2:
+    st.markdown('<div class="section-title">② Shopee mass_update_sales_info ZIP</div>', unsafe_allow_html=True)
+    zip_file = st.file_uploader(
+        "Upload mass_update ZIP",
+        type=["zip"],
+        key="zip",
+        label_visibility="collapsed",
+    )
+    if zip_file:
+        st.caption(f"✅ {zip_file.name}  ({zip_file.size / 1024:.1f} KB)")
+
+
+# ── Run validation ────────────────────────────────────────────────────────────
+st.markdown("")
+_, btn_col, _ = st.columns([2, 1, 2])
+with btn_col:
+    run = st.button("▶  Run Validation", disabled=not (sv_file and zip_file))
+
+
+def _remark_badge(remark: str) -> str:
+    cls = {
+        "TRUE": "true",
+        "IMPACT": "impact",
+        "UPDATE 0": "update0",
+        "NOT IN S&P": "nisp",
+    }.get(remark, "nisp")
+    return f'<span class="badge badge-{cls}">{remark}</span>'
+
+
+def _colour_remark_col(val: str) -> str:
+    colours = {
+        "TRUE":       "background-color:#C6EFCE; color:#375623; font-weight:600",
+        "IMPACT":     "background-color:#FFC7CE; color:#9C0006; font-weight:600",
+        "UPDATE 0":   "background-color:#FFEB9C; color:#7D4800; font-weight:600",
+        "NOT IN S&P": "background-color:#E0E0E0; color:#444;    font-weight:600",
+    }
+    return colours.get(val, "")
+
+
+if run or st.session_state.get("result"):
+    if run:
+        with st.spinner("Processing files…"):
+            try:
+                sv_bytes  = sv_file.read()
+                zip_bytes = zip_file.read()
+                sv_df  = load_stock_validation_csv(sv_bytes)
+                sp_df  = load_mass_update_zip(zip_bytes)
+                result = validate(sv_df, sp_df)
+                excel_buf = build_excel_report(result)
+                st.session_state["result"]    = result
+                st.session_state["excel_buf"] = excel_buf.getvalue()
+            except Exception as exc:
+                st.error(f"❌ Error during processing: {exc}")
+                st.stop()
+
+    result: ValidationResult = st.session_state["result"]
+    excel_bytes: bytes        = st.session_state["excel_buf"]
+
+    # ── KPI cards ──────────────────────────────────────────────────────────
+    pct_match = result.match / result.total * 100 if result.total else 0
+
+    st.markdown(
+        f"""
+        <div class="metric-grid">
+            <div class="metric-card card-total">
+                <div class="label">Total SKUs</div>
+                <div class="value">{result.total:,}</div>
+                <div class="sub">in StockValidation report</div>
+            </div>
+            <div class="metric-card card-match">
+                <div class="label">✓ Match</div>
+                <div class="value">{result.match:,}</div>
+                <div class="sub">{pct_match:.1f}% of total</div>
+            </div>
+            <div class="metric-card card-mismatch">
+                <div class="label">✗ Mismatch</div>
+                <div class="value">{result.mismatch:,}</div>
+                <div class="sub">IMPACT {result.impact} · UPDATE 0 {result.update0} · NOT IN S&P {result.not_in_sp}</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # ── Breakdown bar ──────────────────────────────────────────────────────
+    if result.total:
+        bp_match   = result.match   / result.total * 100
+        bp_impact  = result.impact  / result.total * 100
+        bp_update0 = result.update0 / result.total * 100
+        bp_nisp    = result.not_in_sp / result.total * 100
+        st.markdown(
+            f"""
+            <div style="display:flex;height:10px;border-radius:8px;overflow:hidden;margin:-0.5rem 0 1.5rem">
+                <div style="width:{bp_match:.2f}%;background:#2D7D46"></div>
+                <div style="width:{bp_impact:.2f}%;background:#C0392B"></div>
+                <div style="width:{bp_update0:.2f}%;background:#E6A817"></div>
+                <div style="width:{bp_nisp:.2f}%;background:#aaa"></div>
+            </div>
+            <div style="display:flex;gap:1.5rem;font-size:0.78rem;color:#666;margin-bottom:1.5rem">
+                <span>🟢 Match</span><span>🔴 IMPACT</span><span>🟡 UPDATE 0</span><span>⚪ NOT IN S&P</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    # ── Tabs ───────────────────────────────────────────────────────────────
+    tab_all, tab_mismatch, tab_impact, tab_update0, tab_nisp = st.tabs(
+        ["All SKUs", f"Mismatch ({result.mismatch})", f"IMPACT ({result.impact})", f"UPDATE 0 ({result.update0})", f"NOT IN S&P ({result.not_in_sp})"]
+    )
+
+    def _show_df(df: pd.DataFrame) -> None:
+        if df.empty:
+            st.info("No records in this category.")
+            return
+        styled = df.style.applymap(_colour_remark_col, subset=["Remark"]) if "Remark" in df.columns else df.style
+        st.dataframe(styled, use_container_width=True, height=420)
+
+    with tab_all:
+        _show_df(result.full_df)
+
+    with tab_mismatch:
+        _show_df(result.mismatch_df)
+
+    with tab_impact:
+        _show_df(result.full_df[result.full_df["Remark"] == "IMPACT"])
+
+    with tab_update0:
+        _show_df(result.full_df[result.full_df["Remark"] == "UPDATE 0"])
+
+    with tab_nisp:
+        _show_df(result.full_df[result.full_df["Remark"] == "NOT IN S&P"])
+
+    # ── Download ───────────────────────────────────────────────────────────
+    st.markdown("")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    st.download_button(
+        label="⬇  Download Excel Report",
+        data=excel_bytes,
+        file_name=f"Shopee_Stock_Validation_{timestamp}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+"""
+processor.py
+------------
+Core logic for Shopee Stock Validation.
+Compares a Graas StockValidation CSV against a Shopee
+mass_update_sales_info ZIP (containing one or more .xlsx files).
+
+Remark priority:
+  1. SKU not in mass-update file  → NOT IN S&P
+  2. Expected == 0 AND SP_Qty > 0 → UPDATE 0
+  3. Expected != SP_Qty           → IMPACT
+  4. Expected == SP_Qty           → TRUE  (Match)
+"""
+
+from __future__ import annotations
+
+import io
+import re
+import zipfile
+from dataclasses import dataclass
+
+import pandas as pd
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
+
+
+# ── Colour palette ────────────────────────────────────────────────────────────
+HDR_FILL  = PatternFill("solid", fgColor="1F3864")
+HDR_FONT  = Font(bold=True, color="FFFFFF", name="Arial", size=11)
+TRUE_FILL = PatternFill("solid", fgColor="C6EFCE")
+TRUE_FONT = Font(bold=True, color="375623", name="Arial", size=10)
+MISS_FILL = PatternFill("solid", fgColor="FFC7CE")
+MISS_FONT = Font(bold=True, color="9C0006", name="Arial", size=10)
+UPD0_FILL = PatternFill("solid", fgColor="FFEB9C")
+UPD0_FONT = Font(bold=True, color="7D4800", name="Arial", size=10)
+NISP_FILL = PatternFill("solid", fgColor="D9D9D9")
+NISP_FONT = Font(bold=True, color="595959", name="Arial", size=10)
+ALT_FILL  = PatternFill("solid", fgColor="F2F7FB")
+THIN_BORDER = Border(
+    left=Side(style="thin", color="BFBFBF"),
+    right=Side(style="thin", color="BFBFBF"),
+    top=Side(style="thin", color="BFBFBF"),
+    bottom=Side(style="thin", color="BFBFBF"),
+)
+
+REMARK_STYLE: dict[str, tuple[PatternFill, Font]] = {
+    "TRUE":       (TRUE_FILL, TRUE_FONT),
+    "IMPACT":     (MISS_FILL, MISS_FONT),
+    "UPDATE 0":   (UPD0_FILL, UPD0_FONT),
+    "NOT IN S&P": (NISP_FILL, NISP_FONT),
+}
+
+
+# ── Data classes ──────────────────────────────────────────────────────────────
+@dataclass
+class ValidationResult:
+    full_df: pd.DataFrame
+    mismatch_df: pd.DataFrame
+    total: int
+    match: int
+    impact: int
+    update0: int
+    not_in_sp: int
+
+    @property
+    def mismatch(self) -> int:
+        return self.impact + self.update0 + self.not_in_sp
+
+
+# ── Helper: fix malformed xlsx from Shopee ────────────────────────────────────
+def _fix_xlsx_bytes(raw_bytes: bytes) -> io.BytesIO:
+    """
+    Shopee-exported xlsx files sometimes contain an invalid ``activePane``
+    attribute in the sheet XML.  This function strips it before parsing.
+    """
+    buf = io.BytesIO()
+    with (
+        zipfile.ZipFile(io.BytesIO(raw_bytes), "r") as inner,
+        zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zout,
+    ):
+        for item in inner.infolist():
+            data = inner.read(item.filename)
+            if item.filename.startswith("xl/worksheets/") and item.filename.endswith(".xml"):
+                text = data.decode("utf-8", errors="replace")
+                text = re.sub(r'activePane="[^"]*"', "", text)
+                data = text.encode("utf-8")
+            zout.writestr(item, data)
+    buf.seek(0)
+    return buf
+
+
+# ── Loaders ───────────────────────────────────────────────────────────────────
+def load_mass_update_zip(zip_file: bytes | str) -> pd.DataFrame:
+    """
+    Load all .xlsx files from a Shopee mass_update_sales_info ZIP.
+
+    Accepts either a file path (str) or raw bytes.
+
+    Returns a combined DataFrame with columns:
+        SKU (str), Stock (int), Product Name (str), Price (float)
+    """
+    if isinstance(zip_file, (str,)):
+        with open(zip_file, "rb") as f:
+            zip_file = f.read()
+
+    dfs: list[pd.DataFrame] = []
+    with zipfile.ZipFile(io.BytesIO(zip_file), "r") as z:
+        xlsx_files = [n for n in z.namelist() if n.endswith(".xlsx")]
+        for fn in xlsx_files:
+            raw = z.read(fn)
+            fixed_buf = _fix_xlsx_bytes(raw)
+            df = pd.read_excel(
+                fixed_buf,
+                header=2,
+                skiprows=[3, 4, 5],
+                engine="openpyxl",
+            )
+            dfs.append(df)
+
+    if not dfs:
+        raise ValueError("No .xlsx files found inside the ZIP archive.")
+
+    combined = pd.concat(dfs, ignore_index=True)
+    combined["SKU"]   = combined["SKU"].astype(str).str.strip()
+    combined["Stock"] = pd.to_numeric(combined["Stock"], errors="coerce").fillna(0).astype(int)
+    return combined
+
+
+def load_stock_validation_csv(csv_file: bytes | str) -> pd.DataFrame:
+    """
+    Load a Graas StockValidation CSV.
+
+    Accepts either a file path (str) or raw bytes.
+    """
+    if isinstance(csv_file, (str,)):
+        sv = pd.read_csv(csv_file)
+    else:
+        sv = pd.read_csv(io.BytesIO(csv_file))
+
+    sv.columns = sv.columns.str.strip()
+    sv["Seller SKU"] = sv["Seller SKU"].astype(str).str.strip()
+    return sv
+
+
+# ── Core validation ───────────────────────────────────────────────────────────
+def validate(sv: pd.DataFrame, sp: pd.DataFrame) -> ValidationResult:
+    """
+    Compare StockValidation against mass-update data.
+
+    Parameters
+    ----------
+    sv : StockValidation DataFrame (output of load_stock_validation_csv)
+    sp : mass-update DataFrame    (output of load_mass_update_zip)
+
+    Returns
+    -------
+    ValidationResult
+    """
+    sp_lookup: dict[str, int] = sp.groupby("SKU")["Stock"].sum().to_dict()
+
+    def _classify(row: pd.Series) -> pd.Series:
+        exp = int(row["Expected Stock"]) if pd.notna(row["Expected Stock"]) else 0
+        sp_qty = sp_lookup.get(row["Seller SKU"], None)
+
+        if sp_qty is None:
+            return pd.Series([0, "Mismatch", "NOT IN S&P"])
+        sp_qty = int(sp_qty)
+        if exp == 0 and sp_qty > 0:
+            return pd.Series([sp_qty, "Mismatch", "UPDATE 0"])
+        if exp != sp_qty:
+            return pd.Series([sp_qty, "Mismatch", "IMPACT"])
+        return pd.Series([sp_qty, "Match", "TRUE"])
+
+    sv = sv.copy()
+    sv[["SP_Quantity", "Status", "Remark"]] = sv.apply(_classify, axis=1)
+
+    mismatch_df = sv[sv["Status"] == "Mismatch"].copy()
+
+    return ValidationResult(
+        full_df=sv,
+        mismatch_df=mismatch_df,
+        total=len(sv),
+        match=int((sv["Remark"] == "TRUE").sum()),
+        impact=int((sv["Remark"] == "IMPACT").sum()),
+        update0=int((sv["Remark"] == "UPDATE 0").sum()),
+        not_in_sp=int((sv["Remark"] == "NOT IN S&P").sum()),
+    )
+
+
+# ── Excel export ──────────────────────────────────────────────────────────────
+def _write_sheet(ws, df: pd.DataFrame) -> None:
+    ws.sheet_view.showGridLines = False
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+
+    # Header row
+    for ci, col in enumerate(df.columns, 1):
+        cell = ws.cell(row=1, column=ci, value=col)
+        cell.fill = HDR_FILL
+        cell.font = HDR_FONT
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = THIN_BORDER
+    ws.row_dimensions[1].height = 30
+
+    # Data rows
+    for ri, (_, row) in enumerate(df.iterrows(), 2):
+        remark = row.get("Remark", "") if "Remark" in df.columns else ""
+        fill, font = REMARK_STYLE.get(remark, (None, Font(name="Arial", size=10)))
+        for ci, col in enumerate(df.columns, 1):
+            cell = ws.cell(row=ri, column=ci, value=row[col])
+            cell.border = THIN_BORDER
+            if fill:
+                cell.fill = fill
+                cell.font = font
+            else:
+                cell.font = Font(name="Arial", size=10)
+                if ri % 2 == 0:
+                    cell.fill = ALT_FILL
+
+    # Column widths
+    for ci, col in enumerate(df.columns, 1):
+        sample = [str(df.iloc[r, ci - 1]) for r in range(min(len(df), 300))]
+        max_len = max(len(str(col)), *(len(s) for s in sample), default=10)
+        ws.column_dimensions[get_column_letter(ci)].width = min(max_len + 2, 42)
+
+
+def build_excel_report(result: ValidationResult) -> io.BytesIO:
+    """
+    Build and return an in-memory Excel workbook from a ValidationResult.
+    """
+    wb = Workbook()
+
+    # ── Summary sheet ──────────────────────────────────────────────────────
+    ws_sum = wb.active
+    ws_sum.title = "Summary"
+    ws_sum.sheet_view.showGridLines = False
+    ws_sum.column_dimensions["A"].width = 36
+    ws_sum.column_dimensions["B"].width = 18
+
+    summary_rows = [
+        ("Shopee StockValidation vs Mass Update",  "",                 PatternFill("solid", fgColor="1F3864"), Font(bold=True, color="FFFFFF", name="Arial", size=12)),
+        ("Total SKUs",                              result.total,       None,                                   Font(name="Arial", size=10)),
+        ("Match (TRUE)",                            result.match,       TRUE_FILL,                              TRUE_FONT),
+        ("Mismatch Total",                          result.mismatch,    MISS_FILL,                              MISS_FONT),
+        ("  → IMPACT",                              result.impact,      MISS_FILL,                              Font(color="9C0006", name="Arial", size=10)),
+        ("  → UPDATE 0",                            result.update0,     UPD0_FILL,                              Font(color="7D4800", name="Arial", size=10)),
+        ("  → NOT IN S&P",                          result.not_in_sp,   NISP_FILL,                              Font(color="595959", name="Arial", size=10)),
+    ]
+    for ri, (label, value, fill, font) in enumerate(summary_rows, 2):
+        for ci, v in enumerate([label, value], 1):
+            cell = ws_sum.cell(row=ri, column=ci, value=v)
+            cell.border = THIN_BORDER
+            cell.alignment = Alignment(horizontal="left", vertical="center")
+            cell.font = font
+            if fill:
+                cell.fill = fill
+        ws_sum.row_dimensions[ri].height = 22
+
+    # ── Full data sheet ────────────────────────────────────────────────────
+    ws_sv = wb.create_sheet("StockVal + Remark")
+    _write_sheet(ws_sv, result.full_df)
+
+    # ── Mismatch sheet ─────────────────────────────────────────────────────
+    ws_mm = wb.create_sheet("Mismatch Summary")
+    _write_sheet(ws_mm, result.mismatch_df)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
+Core logic for Shopee Stock Validation.
+Compares a Graas StockValidation CSV against a Shopee
+mass_update_sales_info ZIP (containing one or more .xlsx files).
+
+Remark priority:
+  1. SKU not in mass-update file  → NOT IN S&P
+  2. Expected == 0 AND SP_Qty > 0 → UPDATE 0
+  3. Expected != SP_Qty           → IMPACT
+  4. Expected == SP_Qty           → TRUE  (Match)
+"""
+
+from __future__ import annotations
+
+import io
+import re
+import zipfile
+from dataclasses import dataclass
+
+import pandas as pd
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
+
+
+# ── Colour palette ────────────────────────────────────────────────────────────
+HDR_FILL  = PatternFill("solid", fgColor="1F3864")
+HDR_FONT  = Font(bold=True, color="FFFFFF", name="Arial", size=11)
+TRUE_FILL = PatternFill("solid", fgColor="C6EFCE")
+TRUE_FONT = Font(bold=True, color="375623", name="Arial", size=10)
+MISS_FILL = PatternFill("solid", fgColor="FFC7CE")
+MISS_FONT = Font(bold=True, color="9C0006", name="Arial", size=10)
+UPD0_FILL = PatternFill("solid", fgColor="FFEB9C")
+UPD0_FONT = Font(bold=True, color="7D4800", name="Arial", size=10)
+NISP_FILL = PatternFill("solid", fgColor="D9D9D9")
+NISP_FONT = Font(bold=True, color="595959", name="Arial", size=10)
+ALT_FILL  = PatternFill("solid", fgColor="F2F7FB")
+THIN_BORDER = Border(
+    left=Side(style="thin", color="BFBFBF"),
+    right=Side(style="thin", color="BFBFBF"),
+    top=Side(style="thin", color="BFBFBF"),
+    bottom=Side(style="thin", color="BFBFBF"),
+)
+
+REMARK_STYLE: dict[str, tuple[PatternFill, Font]] = {
+    "TRUE":       (TRUE_FILL, TRUE_FONT),
+    "IMPACT":     (MISS_FILL, MISS_FONT),
+    "UPDATE 0":   (UPD0_FILL, UPD0_FONT),
+    "NOT IN S&P": (NISP_FILL, NISP_FONT),
+}
+
+
+# ── Data classes ──────────────────────────────────────────────────────────────
+@dataclass
+class ValidationResult:
+    full_df: pd.DataFrame
+    mismatch_df: pd.DataFrame
+    total: int
+    match: int
+    impact: int
+    update0: int
+    not_in_sp: int
+
+    @property
+    def mismatch(self) -> int:
+        return self.impact + self.update0 + self.not_in_sp
+
+
+# ── Helper: fix malformed xlsx from Shopee ────────────────────────────────────
+def _fix_xlsx_bytes(raw_bytes: bytes) -> io.BytesIO:
+    """
+    Shopee-exported xlsx files sometimes contain an invalid ``activePane``
+    attribute in the sheet XML.  This function strips it before parsing.
+    """
+    buf = io.BytesIO()
+    with (
+        zipfile.ZipFile(io.BytesIO(raw_bytes), "r") as inner,
+        zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zout,
+    ):
+        for item in inner.infolist():
+            data = inner.read(item.filename)
+            if item.filename.startswith("xl/worksheets/") and item.filename.endswith(".xml"):
+                text = data.decode("utf-8", errors="replace")
+                text = re.sub(r'activePane="[^"]*"', "", text)
+                data = text.encode("utf-8")
+            zout.writestr(item, data)
+    buf.seek(0)
+    return buf
+
+
+# ── Loaders ───────────────────────────────────────────────────────────────────
+def load_mass_update_zip(zip_file: bytes | str) -> pd.DataFrame:
+    """
+    Load all .xlsx files from a Shopee mass_update_sales_info ZIP.
+
+    Accepts either a file path (str) or raw bytes.
+
+    Returns a combined DataFrame with columns:
+        SKU (str), Stock (int), Product Name (str), Price (float)
+    """
+    if isinstance(zip_file, (str,)):
+        with open(zip_file, "rb") as f:
+            zip_file = f.read()
+
+    dfs: list[pd.DataFrame] = []
+    with zipfile.ZipFile(io.BytesIO(zip_file), "r") as z:
+        xlsx_files = [n for n in z.namelist() if n.endswith(".xlsx")]
+        for fn in xlsx_files:
+            raw = z.read(fn)
+            fixed_buf = _fix_xlsx_bytes(raw)
+            df = pd.read_excel(
+                fixed_buf,
+                header=2,
+                skiprows=[3, 4, 5],
+                engine="openpyxl",
+            )
+            dfs.append(df)
+
+    if not dfs:
+        raise ValueError("No .xlsx files found inside the ZIP archive.")
+
+    combined = pd.concat(dfs, ignore_index=True)
+    combined["SKU"]   = combined["SKU"].astype(str).str.strip()
+    combined["Stock"] = pd.to_numeric(combined["Stock"], errors="coerce").fillna(0).astype(int)
+    return combined
+
+
+def load_stock_validation_csv(csv_file: bytes | str) -> pd.DataFrame:
+    """
+    Load a Graas StockValidation CSV.
+
+    Accepts either a file path (str) or raw bytes.
+    """
+    if isinstance(csv_file, (str,)):
+        sv = pd.read_csv(csv_file)
+    else:
+        sv = pd.read_csv(io.BytesIO(csv_file))
+
+    sv.columns = sv.columns.str.strip()
+    sv["Seller SKU"] = sv["Seller SKU"].astype(str).str.strip()
+    return sv
+
+
+# ── Core validation ───────────────────────────────────────────────────────────
+def validate(sv: pd.DataFrame, sp: pd.DataFrame) -> ValidationResult:
+    """
+    Compare StockValidation against mass-update data.
+
+    Parameters
+    ----------
+    sv : StockValidation DataFrame (output of load_stock_validation_csv)
+    sp : mass-update DataFrame    (output of load_mass_update_zip)
+
+    Returns
+    -------
+    ValidationResult
+    """
+    sp_lookup: dict[str, int] = sp.groupby("SKU")["Stock"].sum().to_dict()
+
+    def _classify(row: pd.Series) -> pd.Series:
+        exp = int(row["Expected Stock"]) if pd.notna(row["Expected Stock"]) else 0
+        sp_qty = sp_lookup.get(row["Seller SKU"], None)
+
+        if sp_qty is None:
+            return pd.Series([0, "Mismatch", "NOT IN S&P"])
+        sp_qty = int(sp_qty)
+        if exp == 0 and sp_qty > 0:
+            return pd.Series([sp_qty, "Mismatch", "UPDATE 0"])
+        if exp != sp_qty:
+            return pd.Series([sp_qty, "Mismatch", "IMPACT"])
+        return pd.Series([sp_qty, "Match", "TRUE"])
+
+    sv = sv.copy()
+    sv[["SP_Quantity", "Status", "Remark"]] = sv.apply(_classify, axis=1)
+
+    mismatch_df = sv[sv["Status"] == "Mismatch"].copy()
+
+    return ValidationResult(
+        full_df=sv,
+        mismatch_df=mismatch_df,
+        total=len(sv),
+        match=int((sv["Remark"] == "TRUE").sum()),
+        impact=int((sv["Remark"] == "IMPACT").sum()),
+        update0=int((sv["Remark"] == "UPDATE 0").sum()),
+        not_in_sp=int((sv["Remark"] == "NOT IN S&P").sum()),
+    )
+
+
+# ── Excel export ──────────────────────────────────────────────────────────────
+def _write_sheet(ws, df: pd.DataFrame) -> None:
+    ws.sheet_view.showGridLines = False
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+
+    # Header row
+    for ci, col in enumerate(df.columns, 1):
+        cell = ws.cell(row=1, column=ci, value=col)
+        cell.fill = HDR_FILL
+        cell.font = HDR_FONT
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = THIN_BORDER
+    ws.row_dimensions[1].height = 30
+
+    # Data rows
+    for ri, (_, row) in enumerate(df.iterrows(), 2):
+        remark = row.get("Remark", "") if "Remark" in df.columns else ""
+        fill, font = REMARK_STYLE.get(remark, (None, Font(name="Arial", size=10)))
+        for ci, col in enumerate(df.columns, 1):
+            cell = ws.cell(row=ri, column=ci, value=row[col])
+            cell.border = THIN_BORDER
+            if fill:
+                cell.fill = fill
+                cell.font = font
+            else:
+                cell.font = Font(name="Arial", size=10)
+                if ri % 2 == 0:
+                    cell.fill = ALT_FILL
+
+    # Column widths
+    for ci, col in enumerate(df.columns, 1):
+        sample = [str(df.iloc[r, ci - 1]) for r in range(min(len(df), 300))]
+        max_len = max(len(str(col)), *(len(s) for s in sample), default=10)
+        ws.column_dimensions[get_column_letter(ci)].width = min(max_len + 2, 42)
+
+
+def build_excel_report(result: ValidationResult) -> io.BytesIO:
+    """
+    Build and return an in-memory Excel workbook from a ValidationResult.
+    """
+    wb = Workbook()
+
+    # ── Summary sheet ──────────────────────────────────────────────────────
+    ws_sum = wb.active
+    ws_sum.title = "Summary"
+    ws_sum.sheet_view.showGridLines = False
+    ws_sum.column_dimensions["A"].width = 36
+    ws_sum.column_dimensions["B"].width = 18
+
+    summary_rows = [
+        ("Shopee StockValidation vs Mass Update",  "",                 PatternFill("solid", fgColor="1F3864"), Font(bold=True, color="FFFFFF", name="Arial", size=12)),
+        ("Total SKUs",                              result.total,       None,                                   Font(name="Arial", size=10)),
+        ("Match (TRUE)",                            result.match,       TRUE_FILL,                              TRUE_FONT),
+        ("Mismatch Total",                          result.mismatch,    MISS_FILL,                              MISS_FONT),
+        ("  → IMPACT",                              result.impact,      MISS_FILL,                              Font(color="9C0006", name="Arial", size=10)),
+        ("  → UPDATE 0",                            result.update0,     UPD0_FILL,                              Font(color="7D4800", name="Arial", size=10)),
+        ("  → NOT IN S&P",                          result.not_in_sp,   NISP_FILL,                              Font(color="595959", name="Arial", size=10)),
+    ]
+    for ri, (label, value, fill, font) in enumerate(summary_rows, 2):
+        for ci, v in enumerate([label, value], 1):
+            cell = ws_sum.cell(row=ri, column=ci, value=v)
+            cell.border = THIN_BORDER
+            cell.alignment = Alignment(horizontal="left", vertical="center")
+            cell.font = font
+            if fill:
+                cell.fill = fill
+        ws_sum.row_dimensions[ri].height = 22
+
+    # ── Full data sheet ────────────────────────────────────────────────────
+    ws_sv = wb.create_sheet("StockVal + Remark")
+    _write_sheet(ws_sv, result.full_df)
+
+    # ── Mismatch sheet ─────────────────────────────────────────────────────
+    ws_mm = wb.create_sheet("Mismatch Summary")
+    _write_sheet(ws_mm, result.mismatch_df)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
+# 📦 Shopee Stock Validator
+
+A Streamlit web app that compares a **Graas StockValidation CSV** against a
+**Shopee `mass_update_sales_info` ZIP** and produces a colour-coded Excel report.
+
+---
+
+## Remark Logic
+
+| Priority | Condition | Status | Remark |
+|---|---|---|---|
+| 1 | SKU not found in ZIP | Mismatch | `NOT IN S&P` |
+| 2 | Expected == 0 AND ZIP Qty > 0 | Mismatch | `UPDATE 0` |
+| 3 | Expected ≠ ZIP Qty | Mismatch | `IMPACT` |
+| 4 | Expected == ZIP Qty | Match | `TRUE` |
+
+---
+
+## Project Structure
+
+```
+shopee-stock-validator/
+├── app.py            # Streamlit UI
+├── processor.py      # Core validation & Excel export logic
+├── requirements.txt
+└── README.md
+```
+
+---
+
+## Quickstart
+
+### 1. Clone & install
+
+```bash
+git clone https://github.com/your-org/shopee-stock-validator.git
+cd shopee-stock-validator
+pip install -r requirements.txt
+```
+
+### 2. Run locally
+
+```bash
+streamlit run app.py
+```
+
+Open [http://localhost:8501](http://localhost:8501) in your browser.
+
+---
+
+## Deploy to Streamlit Cloud
+
+1. Push this repo to GitHub (public or private).
+2. Go to [share.streamlit.io](https://share.streamlit.io) → **New app**.
+3. Select your repo, branch `main`, and main file `app.py`.
+4. Click **Deploy** — done!
+
+---
+
+## Input Files
+
+| File | Format | Description |
+|---|---|---|
+| StockValidation | `.csv` | Graas export — must contain `Seller SKU` and `Expected Stock` columns |
+| mass_update_sales_info | `.zip` | Shopee bulk-update ZIP — contains one or more `.xlsx` files with `SKU` and `Stock` columns |
+
+## Output
+
+A three-sheet Excel workbook:
+
+| Sheet | Contents |
+|---|---|
+| `Summary` | KPI dashboard |
+| `StockVal + Remark` | Full list with `SP_Quantity`, `Status`, `Remark` columns |
+| `Mismatch Summary` | Only mismatched rows (IMPACT + UPDATE 0 + NOT IN S&P) |
+
+---
+
+## Use as a Python module
+
+```python
+from processor import (
+    load_stock_validation_csv,
+    load_mass_update_zip,
+    validate,
+    build_excel_report,
+)
+
+sv = load_stock_validation_csv("Graas_Report.csv")
+sp = load_mass_update_zip("mass_update.zip")
+result = validate(sv, sp)
+
+print(result.total, result.match, result.mismatch)
+
+with open("report.xlsx", "wb") as f:
+    f.write(build_excel_report(result).read())
+```
+
+---
+
+## Colour Legend
+
+| Colour | Remark | Meaning |
+|---|---|---|
+| 🟢 Green | `TRUE` | Stock matches |
+| 🔴 Red | `IMPACT` | Stock quantity differs |
+| 🟡 Yellow | `UPDATE 0` | Shopee shows stock but expected is 0 — needs zeroing |
+| ⚪ Grey | `NOT IN S&P` | SKU missing from mass-update file |
+
+streamlit>=1.35.0
+pandas>=2.0.0
+openpyxl>=3.1.0
+
+"""
+app.py  –  Shopee Stock Validator  ·  Streamlit UI
+====================================================
+Upload:
+  1. Graas StockValidation CSV
+  2. Shopee mass_update_sales_info ZIP
+
+Then click "Run Validation" to compare and download the colour-coded report.
+"""
+
+import io
+from datetime import datetime
+
+import pandas as pd
+import streamlit as st
+
+from processor import (
+    ValidationResult,
+    build_excel_report,
+    load_mass_update_zip,
+    load_stock_validation_csv,
+    validate,
+)
+
+# ── Page config ───────────────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="Shopee Stock Validator",
+    page_icon="📦",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
+# ── Custom CSS ────────────────────────────────────────────────────────────────
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Mono:wght@400;500&display=swap');
+
+    html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
+
+    /* Remove default streamlit top padding */
+    .block-container { padding-top: 2rem; padding-bottom: 2rem; }
+
+    /* Hero banner */
+    .hero {
+        background: linear-gradient(135deg, #EE4D2D 0%, #FF7337 60%, #FFB347 100%);
+        border-radius: 16px;
+        padding: 2rem 2.5rem;
+        color: white;
+        margin-bottom: 2rem;
+    }
+    .hero h1 { font-size: 2rem; font-weight: 700; margin: 0; letter-spacing: -0.5px; }
+    .hero p  { font-size: 1rem; opacity: 0.88; margin: 0.4rem 0 0; font-weight: 300; }
+
+    /* Metric cards */
+    .metric-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin: 1.5rem 0; }
+    .metric-card {
+        background: #fff;
+        border: 1px solid #e8e8e8;
+        border-radius: 12px;
+        padding: 1.2rem 1.4rem;
+        box-shadow: 0 2px 8px rgba(0,0,0,.05);
+    }
+    .metric-card .label { font-size: 0.78rem; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: .05em; }
+    .metric-card .value { font-size: 2rem; font-weight: 700; line-height: 1.1; margin-top: 4px; }
+    .metric-card .sub   { font-size: 0.75rem; color: #aaa; margin-top: 4px; }
+    .card-match   .value { color: #2D7D46; }
+    .card-mismatch .value { color: #C0392B; }
+    .card-total   .value { color: #1F3864; }
+
+    /* Remark badges */
+    .badge {
+        display: inline-block;
+        padding: 2px 10px;
+        border-radius: 99px;
+        font-size: 0.75rem;
+        font-weight: 600;
+        font-family: 'DM Mono', monospace;
+    }
+    .badge-true      { background:#C6EFCE; color:#375623; }
+    .badge-impact    { background:#FFC7CE; color:#9C0006; }
+    .badge-update0   { background:#FFEB9C; color:#7D4800; }
+    .badge-nisp      { background:#E0E0E0; color:#444;    }
+
+    /* Upload boxes */
+    [data-testid="stFileUploader"] {
+        border: 2px dashed #EE4D2D40 !important;
+        border-radius: 12px;
+    }
+
+    /* Download button */
+    .stDownloadButton > button {
+        background: linear-gradient(135deg, #EE4D2D, #FF7337) !important;
+        color: white !important;
+        border: none !important;
+        border-radius: 8px !important;
+        font-weight: 600 !important;
+        padding: 0.6rem 1.6rem !important;
+        font-size: 0.95rem !important;
+    }
+    .stDownloadButton > button:hover { opacity: 0.88; }
+
+    /* Run button */
+    .stButton > button {
+        background: #1F3864 !important;
+        color: white !important;
+        border: none !important;
+        border-radius: 8px !important;
+        font-weight: 600 !important;
+        padding: 0.6rem 1.6rem !important;
+        font-size: 0.95rem !important;
+        width: 100%;
+    }
+
+    /* Tabs */
+    .stTabs [data-baseweb="tab-list"] { gap: 4px; border-bottom: 2px solid #f0f0f0; }
+    .stTabs [data-baseweb="tab"] { border-radius: 8px 8px 0 0; font-weight: 500; }
+
+    /* Dataframe */
+    .dataframe-container { border-radius: 10px; overflow: hidden; }
+
+    /* Section divider */
+    .section-title {
+        font-size: 1rem;
+        font-weight: 700;
+        color: #1F3864;
+        margin: 1.5rem 0 0.6rem;
+        letter-spacing: -.2px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+# ── Hero ──────────────────────────────────────────────────────────────────────
+st.markdown(
+    """
+    <div class="hero">
+        <h1>📦 Shopee Stock Validator</h1>
+        <p>Compare Graas StockValidation vs Shopee mass_update_sales_info — get a colour-coded mismatch report instantly.</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+# ── File upload ───────────────────────────────────────────────────────────────
+col1, col2 = st.columns(2)
+
+with col1:
+    st.markdown('<div class="section-title">① Graas StockValidation CSV</div>', unsafe_allow_html=True)
+    sv_file = st.file_uploader(
+        "Upload StockValidation CSV",
+        type=["csv"],
+        key="sv",
+        label_visibility="collapsed",
+    )
+    if sv_file:
+        st.caption(f"✅ {sv_file.name}  ({sv_file.size / 1024:.1f} KB)")
+
+with col2:
+    st.markdown('<div class="section-title">② Shopee mass_update_sales_info ZIP</div>', unsafe_allow_html=True)
+    zip_file = st.file_uploader(
+        "Upload mass_update ZIP",
+        type=["zip"],
+        key="zip",
+        label_visibility="collapsed",
+    )
+    if zip_file:
+        st.caption(f"✅ {zip_file.name}  ({zip_file.size / 1024:.1f} KB)")
+
+
+# ── Run validation ────────────────────────────────────────────────────────────
+st.markdown("")
+_, btn_col, _ = st.columns([2, 1, 2])
+with btn_col:
+    run = st.button("▶  Run Validation", disabled=not (sv_file and zip_file))
+
+
+def _remark_badge(remark: str) -> str:
+    cls = {
+        "TRUE": "true",
+        "IMPACT": "impact",
+        "UPDATE 0": "update0",
+        "NOT IN S&P": "nisp",
+    }.get(remark, "nisp")
+    return f'<span class="badge badge-{cls}">{remark}</span>'
+
+
+def _colour_remark_col(val: str) -> str:
+    colours = {
+        "TRUE":       "background-color:#C6EFCE; color:#375623; font-weight:600",
+        "IMPACT":     "background-color:#FFC7CE; color:#9C0006; font-weight:600",
+        "UPDATE 0":   "background-color:#FFEB9C; color:#7D4800; font-weight:600",
+        "NOT IN S&P": "background-color:#E0E0E0; color:#444;    font-weight:600",
+    }
+    return colours.get(val, "")
+
+
+if run or st.session_state.get("result"):
+    if run:
+        with st.spinner("Processing files…"):
+            try:
+                sv_bytes  = sv_file.read()
+                zip_bytes = zip_file.read()
+                sv_df  = load_stock_validation_csv(sv_bytes)
+                sp_df  = load_mass_update_zip(zip_bytes)
+                result = validate(sv_df, sp_df)
+                excel_buf = build_excel_report(result)
+                st.session_state["result"]    = result
+                st.session_state["excel_buf"] = excel_buf.getvalue()
+            except Exception as exc:
+                st.error(f"❌ Error during processing: {exc}")
+                st.stop()
+
+    result: ValidationResult = st.session_state["result"]
+    excel_bytes: bytes        = st.session_state["excel_buf"]
+
+    # ── KPI cards ──────────────────────────────────────────────────────────
+    pct_match = result.match / result.total * 100 if result.total else 0
+
+    st.markdown(
+        f"""
+        <div class="metric-grid">
+            <div class="metric-card card-total">
+                <div class="label">Total SKUs</div>
+                <div class="value">{result.total:,}</div>
+                <div class="sub">in StockValidation report</div>
+            </div>
+            <div class="metric-card card-match">
+                <div class="label">✓ Match</div>
+                <div class="value">{result.match:,}</div>
+                <div class="sub">{pct_match:.1f}% of total</div>
+            </div>
+            <div class="metric-card card-mismatch">
+                <div class="label">✗ Mismatch</div>
+                <div class="value">{result.mismatch:,}</div>
+                <div class="sub">IMPACT {result.impact} · UPDATE 0 {result.update0} · NOT IN S&P {result.not_in_sp}</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # ── Breakdown bar ──────────────────────────────────────────────────────
+    if result.total:
+        bp_match   = result.match   / result.total * 100
+        bp_impact  = result.impact  / result.total * 100
+        bp_update0 = result.update0 / result.total * 100
+        bp_nisp    = result.not_in_sp / result.total * 100
+        st.markdown(
+            f"""
+            <div style="display:flex;height:10px;border-radius:8px;overflow:hidden;margin:-0.5rem 0 1.5rem">
+                <div style="width:{bp_match:.2f}%;background:#2D7D46"></div>
+                <div style="width:{bp_impact:.2f}%;background:#C0392B"></div>
+                <div style="width:{bp_update0:.2f}%;background:#E6A817"></div>
+                <div style="width:{bp_nisp:.2f}%;background:#aaa"></div>
+            </div>
+            <div style="display:flex;gap:1.5rem;font-size:0.78rem;color:#666;margin-bottom:1.5rem">
+                <span>🟢 Match</span><span>🔴 IMPACT</span><span>🟡 UPDATE 0</span><span>⚪ NOT IN S&P</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    # ── Tabs ───────────────────────────────────────────────────────────────
+    tab_all, tab_mismatch, tab_impact, tab_update0, tab_nisp = st.tabs(
+        ["All SKUs", f"Mismatch ({result.mismatch})", f"IMPACT ({result.impact})", f"UPDATE 0 ({result.update0})", f"NOT IN S&P ({result.not_in_sp})"]
+    )
+
+    def _show_df(df: pd.DataFrame) -> None:
+        if df.empty:
+            st.info("No records in this category.")
+            return
+        styled = df.style.applymap(_colour_remark_col, subset=["Remark"]) if "Remark" in df.columns else df.style
+        st.dataframe(styled, use_container_width=True, height=420)
+
+    with tab_all:
+        _show_df(result.full_df)
+
+    with tab_mismatch:
+        _show_df(result.mismatch_df)
+
+    with tab_impact:
+        _show_df(result.full_df[result.full_df["Remark"] == "IMPACT"])
+
+    with tab_update0:
+        _show_df(result.full_df[result.full_df["Remark"] == "UPDATE 0"])
+
+    with tab_nisp:
+        _show_df(result.full_df[result.full_df["Remark"] == "NOT IN S&P"])
+
+    # ── Download ───────────────────────────────────────────────────────────
+    st.markdown("")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    st.download_button(
+        label="⬇  Download Excel Report",
+        data=excel_bytes,
+        file_name=f"Shopee_Stock_Validation_{timestamp}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+import pandas as pd
+import streamlit as st
+
+from processor import (
+    ValidationResult,
+    build_excel_report,
+    load_mass_update_zip,
+    load_stock_validation_csv,
+    validate,
+)
+
+# ── Page config ───────────────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="Shopee Stock Validator",
+    page_icon="📦",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
+# ── Custom CSS ────────────────────────────────────────────────────────────────
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Mono:wght@400;500&display=swap');
+
+    html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
+
+    /* Remove default streamlit top padding */
+    .block-container { padding-top: 2rem; padding-bottom: 2rem; }
+
+    /* Hero banner */
+    .hero {
+        background: linear-gradient(135deg, #EE4D2D 0%, #FF7337 60%, #FFB347 100%);
+        border-radius: 16px;
+        padding: 2rem 2.5rem;
+        color: white;
+        margin-bottom: 2rem;
+    }
+    .hero h1 { font-size: 2rem; font-weight: 700; margin: 0; letter-spacing: -0.5px; }
+    .hero p  { font-size: 1rem; opacity: 0.88; margin: 0.4rem 0 0; font-weight: 300; }
+
+    /* Metric cards */
+    .metric-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin: 1.5rem 0; }
+    .metric-card {
+        background: #fff;
+        border: 1px solid #e8e8e8;
+        border-radius: 12px;
+        padding: 1.2rem 1.4rem;
+        box-shadow: 0 2px 8px rgba(0,0,0,.05);
+    }
+    .metric-card .label { font-size: 0.78rem; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: .05em; }
+    .metric-card .value { font-size: 2rem; font-weight: 700; line-height: 1.1; margin-top: 4px; }
+    .metric-card .sub   { font-size: 0.75rem; color: #aaa; margin-top: 4px; }
+    .card-match   .value { color: #2D7D46; }
+    .card-mismatch .value { color: #C0392B; }
+    .card-total   .value { color: #1F3864; }
+
+    /* Remark badges */
+    .badge {
+        display: inline-block;
+        padding: 2px 10px;
+        border-radius: 99px;
+        font-size: 0.75rem;
+        font-weight: 600;
+        font-family: 'DM Mono', monospace;
+    }
+    .badge-true      { background:#C6EFCE; color:#375623; }
+    .badge-impact    { background:#FFC7CE; color:#9C0006; }
+    .badge-update0   { background:#FFEB9C; color:#7D4800; }
+    .badge-nisp      { background:#E0E0E0; color:#444;    }
+
+    /* Upload boxes */
+    [data-testid="stFileUploader"] {
+        border: 2px dashed #EE4D2D40 !important;
+        border-radius: 12px;
+    }
+
+    /* Download button */
+    .stDownloadButton > button {
+        background: linear-gradient(135deg, #EE4D2D, #FF7337) !important;
+        color: white !important;
+        border: none !important;
+        border-radius: 8px !important;
+        font-weight: 600 !important;
+        padding: 0.6rem 1.6rem !important;
+        font-size: 0.95rem !important;
+    }
+    .stDownloadButton > button:hover { opacity: 0.88; }
+
+    /* Run button */
+    .stButton > button {
+        background: #1F3864 !important;
+        color: white !important;
+        border: none !important;
+        border-radius: 8px !important;
+        font-weight: 600 !important;
+        padding: 0.6rem 1.6rem !important;
+        font-size: 0.95rem !important;
+        width: 100%;
+    }
+
+    /* Tabs */
+    .stTabs [data-baseweb="tab-list"] { gap: 4px; border-bottom: 2px solid #f0f0f0; }
+    .stTabs [data-baseweb="tab"] { border-radius: 8px 8px 0 0; font-weight: 500; }
+
+    /* Dataframe */
+    .dataframe-container { border-radius: 10px; overflow: hidden; }
+
+    /* Section divider */
+    .section-title {
+        font-size: 1rem;
+        font-weight: 700;
+        color: #1F3864;
+        margin: 1.5rem 0 0.6rem;
+        letter-spacing: -.2px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+# ── Hero ──────────────────────────────────────────────────────────────────────
+st.markdown(
+    """
+    <div class="hero">
+        <h1>📦 Shopee Stock Validator</h1>
+        <p>Compare Graas StockValidation vs Shopee mass_update_sales_info — get a colour-coded mismatch report instantly.</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+# ── File upload ───────────────────────────────────────────────────────────────
+col1, col2 = st.columns(2)
+
+with col1:
+    st.markdown('<div class="section-title">① Graas StockValidation CSV</div>', unsafe_allow_html=True)
+    sv_file = st.file_uploader(
+        "Upload StockValidation CSV",
+        type=["csv"],
+        key="sv",
+        label_visibility="collapsed",
+    )
+    if sv_file:
+        st.caption(f"✅ {sv_file.name}  ({sv_file.size / 1024:.1f} KB)")
+
+with col2:
+    st.markdown('<div class="section-title">② Shopee mass_update_sales_info ZIP</div>', unsafe_allow_html=True)
+    zip_file = st.file_uploader(
+        "Upload mass_update ZIP",
+        type=["zip"],
+        key="zip",
+        label_visibility="collapsed",
+    )
+    if zip_file:
+        st.caption(f"✅ {zip_file.name}  ({zip_file.size / 1024:.1f} KB)")
+
+
+# ── Run validation ────────────────────────────────────────────────────────────
+st.markdown("")
+_, btn_col, _ = st.columns([2, 1, 2])
+with btn_col:
+    run = st.button("▶  Run Validation", disabled=not (sv_file and zip_file))
+
+
+def _remark_badge(remark: str) -> str:
+    cls = {
+        "TRUE": "true",
+        "IMPACT": "impact",
+        "UPDATE 0": "update0",
+        "NOT IN S&P": "nisp",
+    }.get(remark, "nisp")
+    return f'<span class="badge badge-{cls}">{remark}</span>'
+
+
+def _colour_remark_col(val: str) -> str:
+    colours = {
+        "TRUE":       "background-color:#C6EFCE; color:#375623; font-weight:600",
+        "IMPACT":     "background-color:#FFC7CE; color:#9C0006; font-weight:600",
+        "UPDATE 0":   "background-color:#FFEB9C; color:#7D4800; font-weight:600",
+        "NOT IN S&P": "background-color:#E0E0E0; color:#444;    font-weight:600",
+    }
+    return colours.get(val, "")
+
+
+if run or st.session_state.get("result"):
+    if run:
+        with st.spinner("Processing files…"):
+            try:
+                sv_bytes  = sv_file.read()
+                zip_bytes = zip_file.read()
+                sv_df  = load_stock_validation_csv(sv_bytes)
+                sp_df  = load_mass_update_zip(zip_bytes)
+                result = validate(sv_df, sp_df)
+                excel_buf = build_excel_report(result)
+                st.session_state["result"]    = result
+                st.session_state["excel_buf"] = excel_buf.getvalue()
+            except Exception as exc:
+                st.error(f"❌ Error during processing: {exc}")
+                st.stop()
+
+    result: ValidationResult = st.session_state["result"]
+    excel_bytes: bytes        = st.session_state["excel_buf"]
+
+    # ── KPI cards ──────────────────────────────────────────────────────────
+    pct_match = result.match / result.total * 100 if result.total else 0
+
+    st.markdown(
+        f"""
+        <div class="metric-grid">
+            <div class="metric-card card-total">
+                <div class="label">Total SKUs</div>
+                <div class="value">{result.total:,}</div>
+                <div class="sub">in StockValidation report</div>
+            </div>
+            <div class="metric-card card-match">
+                <div class="label">✓ Match</div>
+                <div class="value">{result.match:,}</div>
+                <div class="sub">{pct_match:.1f}% of total</div>
+            </div>
+            <div class="metric-card card-mismatch">
+                <div class="label">✗ Mismatch</div>
+                <div class="value">{result.mismatch:,}</div>
+                <div class="sub">IMPACT {result.impact} · UPDATE 0 {result.update0} · NOT IN S&P {result.not_in_sp}</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # ── Breakdown bar ──────────────────────────────────────────────────────
+    if result.total:
+        bp_match   = result.match   / result.total * 100
+        bp_impact  = result.impact  / result.total * 100
+        bp_update0 = result.update0 / result.total * 100
+        bp_nisp    = result.not_in_sp / result.total * 100
+        st.markdown(
+            f"""
+            <div style="display:flex;height:10px;border-radius:8px;overflow:hidden;margin:-0.5rem 0 1.5rem">
+                <div style="width:{bp_match:.2f}%;background:#2D7D46"></div>
+                <div style="width:{bp_impact:.2f}%;background:#C0392B"></div>
+                <div style="width:{bp_update0:.2f}%;background:#E6A817"></div>
+                <div style="width:{bp_nisp:.2f}%;background:#aaa"></div>
+            </div>
+            <div style="display:flex;gap:1.5rem;font-size:0.78rem;color:#666;margin-bottom:1.5rem">
+                <span>🟢 Match</span><span>🔴 IMPACT</span><span>🟡 UPDATE 0</span><span>⚪ NOT IN S&P</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    # ── Tabs ───────────────────────────────────────────────────────────────
+    tab_all, tab_mismatch, tab_impact, tab_update0, tab_nisp = st.tabs(
+        ["All SKUs", f"Mismatch ({result.mismatch})", f"IMPACT ({result.impact})", f"UPDATE 0 ({result.update0})", f"NOT IN S&P ({result.not_in_sp})"]
+    )
+
+    def _show_df(df: pd.DataFrame) -> None:
+        if df.empty:
+            st.info("No records in this category.")
+            return
+        styled = df.style.applymap(_colour_remark_col, subset=["Remark"]) if "Remark" in df.columns else df.style
+        st.dataframe(styled, use_container_width=True, height=420)
+
+    with tab_all:
+        _show_df(result.full_df)
+
+    with tab_mismatch:
+        _show_df(result.mismatch_df)
+
+    with tab_impact:
+        _show_df(result.full_df[result.full_df["Remark"] == "IMPACT"])
+
+    with tab_update0:
+        _show_df(result.full_df[result.full_df["Remark"] == "UPDATE 0"])
+
+    with tab_nisp:
+        _show_df(result.full_df[result.full_df["Remark"] == "NOT IN S&P"])
+
+    # ── Download ───────────────────────────────────────────────────────────
+    st.markdown("")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    st.download_button(
+        label="⬇  Download Excel Report",
+        data=excel_bytes,
+        file_name=f"Shopee_Stock_Validation_{timestamp}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+"""
+processor.py
+------------
+Core logic for Shopee Stock Validation.
+Compares a Graas StockValidation CSV against a Shopee
+mass_update_sales_info ZIP (containing one or more .xlsx files).
+
+Remark priority:
+  1. SKU not in mass-update file  → NOT IN S&P
+  2. Expected == 0 AND SP_Qty > 0 → UPDATE 0
+  3. Expected != SP_Qty           → IMPACT
+  4. Expected == SP_Qty           → TRUE  (Match)
+"""
+
+from __future__ import annotations
+
+import io
+import re
+import zipfile
+from dataclasses import dataclass
+
+import pandas as pd
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
+
+
+# ── Colour palette ────────────────────────────────────────────────────────────
+HDR_FILL  = PatternFill("solid", fgColor="1F3864")
+HDR_FONT  = Font(bold=True, color="FFFFFF", name="Arial", size=11)
+TRUE_FILL = PatternFill("solid", fgColor="C6EFCE")
+TRUE_FONT = Font(bold=True, color="375623", name="Arial", size=10)
+MISS_FILL = PatternFill("solid", fgColor="FFC7CE")
+MISS_FONT = Font(bold=True, color="9C0006", name="Arial", size=10)
+UPD0_FILL = PatternFill("solid", fgColor="FFEB9C")
+UPD0_FONT = Font(bold=True, color="7D4800", name="Arial", size=10)
+NISP_FILL = PatternFill("solid", fgColor="D9D9D9")
+NISP_FONT = Font(bold=True, color="595959", name="Arial", size=10)
+ALT_FILL  = PatternFill("solid", fgColor="F2F7FB")
+THIN_BORDER = Border(
+    left=Side(style="thin", color="BFBFBF"),
+    right=Side(style="thin", color="BFBFBF"),
+    top=Side(style="thin", color="BFBFBF"),
+    bottom=Side(style="thin", color="BFBFBF"),
+)
+
+REMARK_STYLE: dict[str, tuple[PatternFill, Font]] = {
+    "TRUE":       (TRUE_FILL, TRUE_FONT),
+    "IMPACT":     (MISS_FILL, MISS_FONT),
+    "UPDATE 0":   (UPD0_FILL, UPD0_FONT),
+    "NOT IN S&P": (NISP_FILL, NISP_FONT),
+}
+
+
+# ── Data classes ──────────────────────────────────────────────────────────────
+@dataclass
+class ValidationResult:
+    full_df: pd.DataFrame
+    mismatch_df: pd.DataFrame
+    total: int
+    match: int
+    impact: int
+    update0: int
+    not_in_sp: int
+
+    @property
+    def mismatch(self) -> int:
+        return self.impact + self.update0 + self.not_in_sp
+
+
+# ── Helper: fix malformed xlsx from Shopee ────────────────────────────────────
+def _fix_xlsx_bytes(raw_bytes: bytes) -> io.BytesIO:
+    """
+    Shopee-exported xlsx files sometimes contain an invalid ``activePane``
+    attribute in the sheet XML.  This function strips it before parsing.
+    """
+    buf = io.BytesIO()
+    with (
+        zipfile.ZipFile(io.BytesIO(raw_bytes), "r") as inner,
+        zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zout,
+    ):
+        for item in inner.infolist():
+            data = inner.read(item.filename)
+            if item.filename.startswith("xl/worksheets/") and item.filename.endswith(".xml"):
+                text = data.decode("utf-8", errors="replace")
+                text = re.sub(r'activePane="[^"]*"', "", text)
+                data = text.encode("utf-8")
+            zout.writestr(item, data)
+    buf.seek(0)
+    return buf
+
+
+# ── Loaders ───────────────────────────────────────────────────────────────────
+def load_mass_update_zip(zip_file: bytes | str) -> pd.DataFrame:
+    """
+    Load all .xlsx files from a Shopee mass_update_sales_info ZIP.
+
+    Accepts either a file path (str) or raw bytes.
+
+    Returns a combined DataFrame with columns:
+        SKU (str), Stock (int), Product Name (str), Price (float)
+    """
+    if isinstance(zip_file, (str,)):
+        with open(zip_file, "rb") as f:
+            zip_file = f.read()
+
+    dfs: list[pd.DataFrame] = []
+    with zipfile.ZipFile(io.BytesIO(zip_file), "r") as z:
+        xlsx_files = [n for n in z.namelist() if n.endswith(".xlsx")]
+        for fn in xlsx_files:
+            raw = z.read(fn)
+            fixed_buf = _fix_xlsx_bytes(raw)
+            df = pd.read_excel(
+                fixed_buf,
+                header=2,
+                skiprows=[3, 4, 5],
+                engine="openpyxl",
+            )
+            dfs.append(df)
+
+    if not dfs:
+        raise ValueError("No .xlsx files found inside the ZIP archive.")
+
+    combined = pd.concat(dfs, ignore_index=True)
+    combined["SKU"]   = combined["SKU"].astype(str).str.strip()
+    combined["Stock"] = pd.to_numeric(combined["Stock"], errors="coerce").fillna(0).astype(int)
+    return combined
+
+
+def load_stock_validation_csv(csv_file: bytes | str) -> pd.DataFrame:
+    """
+    Load a Graas StockValidation CSV.
+
+    Accepts either a file path (str) or raw bytes.
+    """
+    if isinstance(csv_file, (str,)):
+        sv = pd.read_csv(csv_file)
+    else:
+        sv = pd.read_csv(io.BytesIO(csv_file))
+
+    sv.columns = sv.columns.str.strip()
+    sv["Seller SKU"] = sv["Seller SKU"].astype(str).str.strip()
+    return sv
+
+
+# ── Core validation ───────────────────────────────────────────────────────────
+def validate(sv: pd.DataFrame, sp: pd.DataFrame) -> ValidationResult:
+    """
+    Compare StockValidation against mass-update data.
+
+    Parameters
+    ----------
+    sv : StockValidation DataFrame (output of load_stock_validation_csv)
+    sp : mass-update DataFrame    (output of load_mass_update_zip)
+
+    Returns
+    -------
+    ValidationResult
+    """
+    sp_lookup: dict[str, int] = sp.groupby("SKU")["Stock"].sum().to_dict()
+
+    def _classify(row: pd.Series) -> pd.Series:
+        exp = int(row["Expected Stock"]) if pd.notna(row["Expected Stock"]) else 0
+        sp_qty = sp_lookup.get(row["Seller SKU"], None)
+
+        if sp_qty is None:
+            return pd.Series([0, "Mismatch", "NOT IN S&P"])
+        sp_qty = int(sp_qty)
+        if exp == 0 and sp_qty > 0:
+            return pd.Series([sp_qty, "Mismatch", "UPDATE 0"])
+        if exp != sp_qty:
+            return pd.Series([sp_qty, "Mismatch", "IMPACT"])
+        return pd.Series([sp_qty, "Match", "TRUE"])
+
+    sv = sv.copy()
+    sv[["SP_Quantity", "Status", "Remark"]] = sv.apply(_classify, axis=1)
+
+    mismatch_df = sv[sv["Status"] == "Mismatch"].copy()
+
+    return ValidationResult(
+        full_df=sv,
+        mismatch_df=mismatch_df,
+        total=len(sv),
+        match=int((sv["Remark"] == "TRUE").sum()),
+        impact=int((sv["Remark"] == "IMPACT").sum()),
+        update0=int((sv["Remark"] == "UPDATE 0").sum()),
+        not_in_sp=int((sv["Remark"] == "NOT IN S&P").sum()),
+    )
+
+
+# ── Excel export ──────────────────────────────────────────────────────────────
+def _write_sheet(ws, df: pd.DataFrame) -> None:
+    ws.sheet_view.showGridLines = False
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+
+    # Header row
+    for ci, col in enumerate(df.columns, 1):
+        cell = ws.cell(row=1, column=ci, value=col)
+        cell.fill = HDR_FILL
+        cell.font = HDR_FONT
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = THIN_BORDER
+    ws.row_dimensions[1].height = 30
+
+    # Data rows
+    for ri, (_, row) in enumerate(df.iterrows(), 2):
+        remark = row.get("Remark", "") if "Remark" in df.columns else ""
+        fill, font = REMARK_STYLE.get(remark, (None, Font(name="Arial", size=10)))
+        for ci, col in enumerate(df.columns, 1):
+            cell = ws.cell(row=ri, column=ci, value=row[col])
+            cell.border = THIN_BORDER
+            if fill:
+                cell.fill = fill
+                cell.font = font
+            else:
+                cell.font = Font(name="Arial", size=10)
+                if ri % 2 == 0:
+                    cell.fill = ALT_FILL
+
+    # Column widths
+    for ci, col in enumerate(df.columns, 1):
+        sample = [str(df.iloc[r, ci - 1]) for r in range(min(len(df), 300))]
+        max_len = max(len(str(col)), *(len(s) for s in sample), default=10)
+        ws.column_dimensions[get_column_letter(ci)].width = min(max_len + 2, 42)
+
+
+def build_excel_report(result: ValidationResult) -> io.BytesIO:
+    """
+    Build and return an in-memory Excel workbook from a ValidationResult.
+    """
+    wb = Workbook()
+
+    # ── Summary sheet ──────────────────────────────────────────────────────
+    ws_sum = wb.active
+    ws_sum.title = "Summary"
+    ws_sum.sheet_view.showGridLines = False
+    ws_sum.column_dimensions["A"].width = 36
+    ws_sum.column_dimensions["B"].width = 18
+
+    summary_rows = [
+        ("Shopee StockValidation vs Mass Update",  "",                 PatternFill("solid", fgColor="1F3864"), Font(bold=True, color="FFFFFF", name="Arial", size=12)),
+        ("Total SKUs",                              result.total,       None,                                   Font(name="Arial", size=10)),
+        ("Match (TRUE)",                            result.match,       TRUE_FILL,                              TRUE_FONT),
+        ("Mismatch Total",                          result.mismatch,    MISS_FILL,                              MISS_FONT),
+        ("  → IMPACT",                              result.impact,      MISS_FILL,                              Font(color="9C0006", name="Arial", size=10)),
+        ("  → UPDATE 0",                            result.update0,     UPD0_FILL,                              Font(color="7D4800", name="Arial", size=10)),
+        ("  → NOT IN S&P",                          result.not_in_sp,   NISP_FILL,                              Font(color="595959", name="Arial", size=10)),
+    ]
+    for ri, (label, value, fill, font) in enumerate(summary_rows, 2):
+        for ci, v in enumerate([label, value], 1):
+            cell = ws_sum.cell(row=ri, column=ci, value=v)
+            cell.border = THIN_BORDER
+            cell.alignment = Alignment(horizontal="left", vertical="center")
+            cell.font = font
+            if fill:
+                cell.fill = fill
+        ws_sum.row_dimensions[ri].height = 22
+
+    # ── Full data sheet ────────────────────────────────────────────────────
+    ws_sv = wb.create_sheet("StockVal + Remark")
+    _write_sheet(ws_sv, result.full_df)
+
+    # ── Mismatch sheet ─────────────────────────────────────────────────────
+    ws_mm = wb.create_sheet("Mismatch Summary")
+    _write_sheet(ws_mm, result.mismatch_df)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
+# 📦 Shopee Stock Validator
+
+A Streamlit web app that compares a **Graas StockValidation CSV** against a
+**Shopee `mass_update_sales_info` ZIP** and produces a colour-coded Excel report.
+
+---
+
+## Remark Logic
+
+| Priority | Condition | Status | Remark |
+|---|---|---|---|
+| 1 | SKU not found in ZIP | Mismatch | `NOT IN S&P` |
+| 2 | Expected == 0 AND ZIP Qty > 0 | Mismatch | `UPDATE 0` |
+| 3 | Expected ≠ ZIP Qty | Mismatch | `IMPACT` |
+| 4 | Expected == ZIP Qty | Match | `TRUE` |
+
+---
+
+## Project Structure
+
+```
+shopee-stock-validator/
+├── app.py            # Streamlit UI
+├── processor.py      # Core validation & Excel export logic
+├── requirements.txt
+└── README.md
+```
+
+---
+
+## Quickstart
+
+### 1. Clone & install
+
+```bash
+git clone https://github.com/your-org/shopee-stock-validator.git
+cd shopee-stock-validator
+pip install -r requirements.txt
+```
+
+### 2. Run locally
+
+```bash
+streamlit run app.py
+```
+
+Open [http://localhost:8501](http://localhost:8501) in your browser.
+
+---
+
+## Deploy to Streamlit Cloud
+
+1. Push this repo to GitHub (public or private).
+2. Go to [share.streamlit.io](https://share.streamlit.io) → **New app**.
+3. Select your repo, branch `main`, and main file `app.py`.
+4. Click **Deploy** — done!
+
+---
+
+## Input Files
+
+| File | Format | Description |
+|---|---|---|
+| StockValidation | `.csv` | Graas export — must contain `Seller SKU` and `Expected Stock` columns |
+| mass_update_sales_info | `.zip` | Shopee bulk-update ZIP — contains one or more `.xlsx` files with `SKU` and `Stock` columns |
+
+## Output
+
+A three-sheet Excel workbook:
+
+| Sheet | Contents |
+|---|---|
+| `Summary` | KPI dashboard |
+| `StockVal + Remark` | Full list with `SP_Quantity`, `Status`, `Remark` columns |
+| `Mismatch Summary` | Only mismatched rows (IMPACT + UPDATE 0 + NOT IN S&P) |
+
+---
+
+## Use as a Python module
+
+```python
+from processor import (
+    load_stock_validation_csv,
+    load_mass_update_zip,
+    validate,
+    build_excel_report,
+)
+
+sv = load_stock_validation_csv("Graas_Report.csv")
+sp = load_mass_update_zip("mass_update.zip")
+result = validate(sv, sp)
+
+print(result.total, result.match, result.mismatch)
+
+with open("report.xlsx", "wb") as f:
+    f.write(build_excel_report(result).read())
+```
+
+---
+
+## Colour Legend
+
+| Colour | Remark | Meaning |
+|---|---|---|
+| 🟢 Green | `TRUE` | Stock matches |
+| 🔴 Red | `IMPACT` | Stock quantity differs |
+| 🟡 Yellow | `UPDATE 0` | Shopee shows stock but expected is 0 — needs zeroing |
+| ⚪ Grey | `NOT IN S&P` | SKU missing from mass-update file |
+
+streamlit>=1.35.0
+pandas>=2.0.0
+openpyxl>=3.1.0
